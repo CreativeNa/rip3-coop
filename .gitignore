@@ -1,0 +1,23 @@
+# Only our own work goes into the repository.
+
+# game files and anything made from them (copyrighted)
+/game/
+/local/
+/build/img/
+/build/screenshots/
+
+# downloaded tools (Zig, Ghidra, JDK): fetched again, not stored
+/tools/
+/downloads/
+
+# build output, rebuilt by scripts/build.ps1
+/build/*.dll
+/build/*.exe
+/build/*.lib
+/build/*.pdb
+/build/*.log
+/build/*.bin
+/build/*.dat
+/build/*.coopbak
+/dist/*.zip
+/dist/rip3-coop/
