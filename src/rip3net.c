@@ -809,31 +809,48 @@ static void ai_keys(uint8_t *kb) {
 typedef struct { uint16_t buttons; uint8_t lt, rt; int16_t lx, ly, rx, ry; } xpad;
 typedef DWORD (WINAPI *XInputGetState_t)(DWORD, void *);
 
+static int g_pad_ok;                    /* a pad was found; shown in the co-op screen */
+static DWORD g_pad_next_load;
+static void pad_found(DWORD index) {
+    if (g_pad_ok) return;
+    g_pad_ok = 1;
+    logf_("gamepad connected on slot %lu", (unsigned long)index);
+}
+
 static int pad_read(xpad *p) {
     static XInputGetState_t get;
-    static int tried;
     static DWORD next_try, pad_index;
-    if (!tried) {
-        tried = 1;
+    if (!get && GetTickCount() >= g_pad_next_load) {
         HMODULE m = LoadLibraryA("xinput1_4.dll");
         if (!m) m = LoadLibraryA("xinput1_3.dll");
         if (!m) m = LoadLibraryA("xinput9_1_0.dll");
         if (m) get = (XInputGetState_t)GetProcAddress(m, "XInputGetState");
+        g_pad_next_load = GetTickCount() + 5000;
     }
     if (!get) return 0;
-    struct { DWORD packet; xpad pad; } st;
     if (GetTickCount() < next_try) return 0;
-    if (get(pad_index, &st) == 0) { *p = st.pad; return 1; }
+    struct { DWORD packet; xpad pad; } st;
+    if (get(pad_index, &st) == 0) { *p = st.pad; pad_found(pad_index); return 1; }
     /* not connected: look at the other slots, at most once a second */
     for (DWORD i = 0; i < 4; i++)
-        if (get(i, &st) == 0) { pad_index = i; *p = st.pad; return 1; }
+        if (get(i, &st) == 0) { pad_index = i; *p = st.pad; pad_found(i); return 1; }
+    if (g_pad_ok) { g_pad_ok = 0; logf_("gamepad disconnected"); }
     next_try = GetTickCount() + 1000;
     return 0;
 }
 
-static void pad_keys(uint8_t *kb) {
+static xpad g_pad_state;
+static int g_pad_have;
+
+static void pad_poll(void) {
     xpad p;
-    if (!pad_read(&p)) return;
+    g_pad_have = pad_read(&p);
+    if (g_pad_have) g_pad_state = p;
+}
+
+static void pad_keys(uint8_t *kb) {
+    if (!g_pad_have) return;
+    xpad p = g_pad_state;
     const int dz = 12000;
     if (p.lx < -dz || (p.buttons & 0x0004)) kb[DIK_A] = 0x80;
     if (p.lx > dz || (p.buttons & 0x0008)) kb[DIK_D] = 0x80;
@@ -868,6 +885,7 @@ static void __fastcall my_poll(void *input) {
     if (g_state == S_RUNNING) build_mouse_serve();
     orig_poll(input);
     g_in_poll = 0;
+    pad_poll();
     /* the pad plays player 2: alone at one computer, or as the friend; the host is player 1 */
     if (obj[KBD_VALID] && (g_state != S_RUNNING || g_role != ROLE_HOST)) pad_keys(obj + KBD_FIRST);
     if (g_state != S_RUNNING) return;
@@ -1037,6 +1055,7 @@ static int screen_content(char lines[6][200], button *b, int *nb) {
     } else if (!link_alive() || g_info.state == INFO_IDLE) {
         snprintf(lines[n++], 200, "Способ: %s", g_mode ? "Radmin VPN (26.x)" : "интернет, код через STUN");
         if (g_mode) snprintf(lines[n++], 200, "Разрешите UDP 27605 в брандмауэре Windows.");
+        if (g_pad_ok) snprintf(lines[n++], 200, "Геймпад: подключён (игрок 2).");
         snprintf(lines[n++], 200, "Хост ведёт меню, друг - второй игрок.");
         b[(*nb)++] = (button){ B_MODE, g_mode ? "Переключить на интернет" : "Переключить на Radmin VPN" };
         b[(*nb)++] = (button){ B_HOST, "Создать игру" };
