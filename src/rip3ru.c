@@ -40,6 +40,13 @@ static const uint8_t k_store[] = { 0x53, 0x88, 0x1D, 0x0C, 0xC6, 0x4F, 0x00 };
 static FILE *g_log;
 static char g_dir[MAX_PATH];
 
+static int language_is_ru(void) {
+    char path[MAX_PATH], value[16];
+    snprintf(path, sizeof path, "%s\\rip3mod.ini", g_dir);
+    GetPrivateProfileStringA("General", "Language", "ru", value, sizeof value, path);
+    return _stricmp(value, "en") != 0 && _stricmp(value, "english") != 0;
+}
+
 static void logf_(const char *fmt, ...) {
     if (!g_log) return;
     va_list ap;
@@ -343,6 +350,10 @@ static DWORD WINAPI worker(LPVOID self) {
     if (slash) *slash = 0;
     snprintf(path, sizeof path, "%s\\rip3ru.log", g_dir);
     g_log = fopen(path, "a");
+    if (!language_is_ru()) {
+        logf_("game language: English (Russian translation disabled)");
+        return 0;
+    }
 
     size_t len;
     char *perks = load_file("perks.ru.txt", &len);

@@ -67,6 +67,7 @@ static uint32_t g_seed = 1, g_rand_calls;
 static void *g_input_obj;
 static LARGE_INTEGER g_qpf, g_last_frame;
 static char g_dir[MAX_PATH], g_coop_save[MAX_PATH];
+static int g_lang_ru = 1;                /* game language, read from build\rip3mod.ini */
 static FILE *g_log;
 
 typedef void(__fastcall *frame_fn)(void *game);
@@ -86,6 +87,25 @@ static void logf_(const char *fmt, ...) {
     va_end(ap);
     fputc('\n', g_log);
     fflush(g_log);
+}
+
+static void language_path(char *out, size_t n) {
+    snprintf(out, n, "%s\\rip3mod.ini", g_dir);
+}
+
+static void load_language(void) {
+    char path[MAX_PATH], value[16];
+    language_path(path, sizeof path);
+    GetPrivateProfileStringA("General", "Language", "ru", value, sizeof value, path);
+    g_lang_ru = _stricmp(value, "en") != 0 && _stricmp(value, "english") != 0;
+    logf_("game language: %s", g_lang_ru ? "ru" : "en");
+}
+
+static void save_language(void) {
+    char path[MAX_PATH];
+    language_path(path, sizeof path);
+    WritePrivateProfileStringA("General", "Language", g_lang_ru ? "ru" : "en", path);
+    logf_("game language set to %s (restart required)", g_lang_ru ? "ru" : "en");
 }
 
 /* ---- patching ---- */
@@ -971,6 +991,7 @@ static int key_edge(int vk) {
 static HWND g_overlay;
 static volatile int g_screen_open;
 static int g_mode;                       /* 0 = internet/STUN, 1 = Radmin VPN */
+static int g_settings;                   /* co-op screen shows the mod settings page */
 static uint8_t g_queued_cmd;
 static char g_queued_text[64];
 
@@ -1037,7 +1058,7 @@ static void disconnect(void) {
 }
 
 /* screen layout in game space: 1024x768, origin in the centre (the cursor's space) */
-enum { B_HOST = 1, B_JOIN, B_BOT, B_PASTE, B_COPY, B_START, B_STOP, B_DISCONNECT, B_BACK, B_MODE };
+enum { B_HOST = 1, B_JOIN, B_BOT, B_PASTE, B_COPY, B_START, B_STOP, B_DISCONNECT, B_BACK, B_MODE, B_SETTINGS, B_LANG };
 typedef struct { int id; const char *label; } button;
 #define SCR_W 560
 #define BTN_W 380
@@ -1047,6 +1068,14 @@ typedef struct { int id; const char *label; } button;
 static int screen_content(char lines[6][200], button *b, int *nb) {
     int n = 0;
     *nb = 0;
+    if (g_settings) {
+        snprintf(lines[n++], 200, "Настройки мода");
+        snprintf(lines[n++], 200, "Язык игры: %s", g_lang_ru ? "русский" : "English");
+        snprintf(lines[n++], 200, "Применится после перезапуска игры.");
+        b[(*nb)++] = (button){ B_LANG, g_lang_ru ? "Переключить на English" : "Переключить на русский" };
+        b[(*nb)++] = (button){ B_BACK, "Назад" };
+        return n;
+    }
     const char *role = g_info.role == ROLE_HOST ? "хост (первый игрок)" : "второй игрок";
     int launching = g_queued_cmd || preparing() || (link_alive() && g_info.state == INFO_IDLE && !g_info.note[0]);
     if (launching) {
@@ -1061,6 +1090,7 @@ static int screen_content(char lines[6][200], button *b, int *nb) {
         b[(*nb)++] = (button){ B_HOST, "Создать игру" };
         b[(*nb)++] = (button){ B_JOIN, "Подключиться к другу" };
         b[(*nb)++] = (button){ B_BOT, "Тест: бот - второй игрок" };
+        b[(*nb)++] = (button){ B_SETTINGS, "Настройки" };
     } else if (g_info.state == INFO_ERROR) {
         snprintf(lines[n++], 200, "%s", g_info.note[0] ? g_info.note : "Ошибка соединения.");
         b[(*nb)++] = (button){ B_DISCONNECT, "Попробовать снова" };
@@ -1115,17 +1145,22 @@ static void screen_click(float cx, float cy) {
         case B_STOP: send_stop(); end_session("хост остановил"); break;
         case B_DISCONNECT: disconnect(); break;
         case B_BACK:
-            if (g_info.state == INFO_ERROR) disconnect();
-            g_screen_open = 0;
+            if (g_settings) g_settings = 0;
+            else {
+                if (g_info.state == INFO_ERROR) disconnect();
+                g_screen_open = 0;
+            }
             break;
         case B_MODE: g_mode = !g_mode; break;
+        case B_SETTINGS: g_settings = 1; break;
+        case B_LANG: g_lang_ru = !g_lang_ru; save_language(); break;
         }
         return;
     }
 }
 
 /* called by the patched MULTIPLAYER button check in FUN_0040f600 (registers saved) */
-static void __cdecl open_coop_screen(void) { g_screen_open = 1; }
+static void __cdecl open_coop_screen(void) { g_settings = 0; g_screen_open = 1; }
 
 static int hook_multiplayer_button(void) {
     /* buttons: game+0x15418 is MULTIPLAYER (created at y=-20 in FUN_0040c210).
@@ -1435,6 +1470,7 @@ static DWORD WINAPI install(LPVOID self) {
     snprintf(path, sizeof path, "%s\\rip3net.log", g_dir);
     g_log = fopen(path, "w");
     snprintf(g_coop_save, sizeof g_coop_save, "%s\\coop_save.dat", g_dir);
+    load_language();
     QueryPerformanceFrequency(&g_qpf);
 
     /* PECompact checks the unpacked code: patch only after the game made its window */
