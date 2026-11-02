@@ -22,6 +22,7 @@
 #define ADDR_TABLE_EN    0x004F1340u
 #define ADDR_TABLE_RU    0x004F1490u
 #define TABLE_ENTRIES    83
+#define ADDR_MULTIPLAYER_RU 0x004BC6CCu /* "СЕТЕВАЯ ИГРА", pointed to by the RU table */
 #define ADDR_GAME        0x00503B50u
 #define GAME_PERKS_OBJ   0x1114u     /* -> object loaded by FUN_004400d0 (ecx at 0x413F87) */
 #define PERKS_KEY        0x111Cu
@@ -79,6 +80,33 @@ static void apply_table(void) {
     VirtualProtect((void *)ADDR_TABLE_EN, TABLE_ENTRIES * 4, PAGE_READWRITE, &old);
     memcpy((void *)ADDR_TABLE_EN, (void *)ADDR_TABLE_RU, TABLE_ENTRIES * 4);
     VirtualProtect((void *)ADDR_TABLE_EN, TABLE_ENTRIES * 4, old, &old);
+}
+
+/* The old LAN deathmatch button says "СЕТЕВАЯ ИГРА"; our screen is co-op.
+   The Russian table points at this fixed string, so rewrite it in place. */
+static void rename_multiplayer(void) {
+    static const char old_ru[] = {
+        (char)0xD1, (char)0xC5, (char)0xD2, (char)0xC5, (char)0xC2, (char)0xC0,
+        (char)0xDF, ' ', (char)0xC8, (char)0xC3, (char)0xD0, (char)0xC0
+    };
+    static const char new_ru[] = {
+        (char)0xCA, (char)0xCE, (char)0xCE, (char)0xCF, (char)0xC5,
+        (char)0xD0, (char)0xC0, (char)0xD2, (char)0xC8, (char)0xC2, 0
+    };
+    char *p = (char *)ADDR_MULTIPLAYER_RU;
+    if (memcmp(p, old_ru, sizeof old_ru) != 0) {
+        logf_("menu: MULTIPLAYER label not found");
+        return;
+    }
+    DWORD old;
+    if (!VirtualProtect(p, 13, PAGE_READWRITE, &old)) {
+        logf_("menu: cannot unlock MULTIPLAYER label (%lu)", GetLastError());
+        return;
+    }
+    memcpy(p, new_ru, sizeof new_ru);
+    memset(p + sizeof new_ru, 0, 13 - sizeof new_ru);
+    VirtualProtect(p, 13, old, &old);
+    logf_("menu: MULTIPLAYER -> КООПЕРАТИВ");
 }
 
 /* ---- 3. perks.dat ---- */
@@ -340,6 +368,7 @@ static DWORD WINAPI worker(LPVOID self) {
     }
     *(volatile uint8_t *)ADDR_LANG = RIP3_LANG_RU;
     apply_table();
+    rename_multiplayer();
     int nl = redirect_calls(ADDR_PAK_LOCATE, my_locate);
     int nr = redirect_calls(ADDR_PAK_READ, my_read);
     logf_("language + string table + pak hooks (%d/%d) after %lu ms", nl, nr, GetTickCount() - t0);
