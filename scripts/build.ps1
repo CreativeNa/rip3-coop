@@ -4,6 +4,14 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 $zig = (Get-ChildItem "$root\tools\zig" -Recurse -Filter zig.exe | Select-Object -First 1).FullName
 New-Item -ItemType Directory -Force "$root\build\lang" | Out-Null
+# Zig's default caches live in the user profile; keep them in build\ so the build also
+# works under a restricted token or on a machine where %LOCALAPPDATA% is read-only.
+$cache = "$root\build\zig-cache"
+New-Item -ItemType Directory -Force "$cache\tmp" | Out-Null
+$env:TMP = "$cache\tmp"
+$env:TEMP = "$cache\tmp"
+$env:ZIG_GLOBAL_CACHE_DIR = "$cache\global"
+$env:ZIG_LOCAL_CACHE_DIR = "$cache\local"
 
 & $zig cc -target x86-windows-gnu -O2 -shared -o "$root\build\rip3ru.dll" "$root\src\rip3ru.c"
 if ($LASTEXITCODE) { throw "rip3ru.dll build failed" }

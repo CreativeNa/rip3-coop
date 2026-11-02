@@ -19,5 +19,11 @@
 /build/*.bin
 /build/*.dat
 /build/*.coopbak
+/build/zig-cache/
+/build/zig-global-cache/
+/build/zig-local-cache/
+/build/tmp/
+/build/package-stage/
+/build/dist-check/
 /dist/*.zip
 /dist/rip3-coop/
