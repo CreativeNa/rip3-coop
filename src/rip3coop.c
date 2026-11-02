@@ -7,6 +7,7 @@
 //               compares the game's per-frame checks with hash_record.txt
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@ static SOCKET g_inet = INVALID_SOCKET, g_link = INVALID_SOCKET;
 static struct sockaddr_in g_dll;            /* 127.0.0.1:NP_PORT_DLL */
 static struct sockaddr_in g_peer_pub, g_peer_lan, g_peer;
 static int g_connected, g_role;
+static int g_radmin;                        /* direct mode: code carries the 26.x VPN address */
 static uint16_t g_nonce, g_peer_nonce, g_rtt;
 static DWORD g_last_peer;
 
@@ -519,10 +521,61 @@ static SOCKET bind_inet(void) {
     return udp_bind(INADDR_ANY, 0);
 }
 
-/* STUN + own invite code (copied to the clipboard) */
-static void make_identity(void) {
+/* Radmin VPN gives every member an address in 26.0.0.0/8.  A code with that
+   address is enough: both sides send UDP directly through the virtual adapter.
+   RIP3COOP_LOCAL_IP is an escape hatch for testing and for other VPNs. */
+static uint32_t find_radmin_ip(void) {
+    const char *env = getenv("RIP3COOP_LOCAL_IP");
+    if (env && *env) {
+        struct in_addr a;
+        if (inet_pton(AF_INET, env, &a) == 1) return ntohl(a.s_addr);
+    }
+    uint32_t found = 0;
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return 0;
+    INTERFACE_INFO info[32];
+    DWORD bytes = 0;
+    if (WSAIoctl(s, SIO_GET_INTERFACE_LIST, NULL, 0, info, sizeof info, &bytes, NULL, NULL) == 0) {
+        DWORD n = bytes / sizeof info[0];
+        for (DWORD i = 0; i < n; i++) {
+            if (!(info[i].iiFlags & IFF_UP)) continue;
+            uint32_t ip = ntohl(info[i].iiAddress.AddressIn.sin_addr.s_addr);
+            if ((ip >> 24) == 26) { found = ip; break; }
+        }
+    }
+    closesocket(s);
+    return found;
+}
+
+/* STUN or Radmin address, plus own invite code (copied to the clipboard) */
+static int make_identity(void) {
     srand(GetTickCount() ^ GetCurrentProcessId());
     g_nonce = (uint16_t)(rand() ^ (rand() << 4)) | 1;
+    g_code[0] = 0;
+
+    if (g_radmin) {
+        uint32_t ip = find_radmin_ip();
+        if (!ip) {
+            say("Radmin VPN не найден. Включите Radmin и повторите.");
+            return 0;
+        }
+        struct sockaddr_in local = { 0 };
+        int al = sizeof local;
+        if (g_inet == INVALID_SOCKET || getsockname(g_inet, (struct sockaddr *)&local, &al) != 0) {
+            say("Не удалось открыть UDP-порт для Radmin.");
+            return 0;
+        }
+        memset(&g_pub, 0, sizeof g_pub);
+        g_pub.sin_family = AF_INET;
+        g_pub.sin_addr.s_addr = htonl(ip);
+        g_pub.sin_port = local.sin_port;
+        encode_code(ip, ntohs(g_pub.sin_port), g_code);
+        copy_to_clipboard(g_code);
+        say("Radmin VPN: код скопирован (порт %u). Разрешите UDP 27605 в брандмауэре.",
+            (unsigned)ntohs(g_pub.sin_port));
+        return 1;
+    }
+
     say("Узнаю свой внешний адрес...");
     struct sockaddr_in pub2 = { 0 };
     int have_pub = stun_query("stun.l.google.com", &g_pub) || stun_query("stun1.l.google.com", &g_pub);
@@ -540,6 +593,7 @@ static void make_identity(void) {
     if (!have_pub) say("Внешний адрес не найден - код сработает только в одной локальной сети.");
     else if (symmetric) say("Внимание: строгий NAT у роутера - соединение может не получиться.");
     else say("Ваш код скопирован.");
+    return 1;
 }
 
 static int set_peer(const char *text) {
@@ -627,7 +681,7 @@ static void online_loop(void) {
 }
 
 static void run_online(void) {
-    make_identity();
+    if (!make_identity()) return;
     printf("\n  ВАШ КОД:  %s\n  (уже скопирован - отправьте его %s)\n\n", g_code, g_role == ROLE_HOST ? "другу" : "хосту");
     for (;;) {
         printf("Вставьте код %s и нажмите Enter: ", g_role == ROLE_HOST ? "друга" : "хоста");
@@ -665,11 +719,16 @@ static void run_service(DWORD pid) {
         if (c->op == CMD_QUIT) ExitProcess(0);
         if ((c->op == CMD_HOST || c->op == CMD_JOIN) && g_info_state == INFO_IDLE) {
             g_role = c->op == CMD_HOST ? ROLE_HOST : ROLE_CLIENT;
+            g_radmin = !strcmp(c->text, "radmin");
             if (g_inet == INVALID_SOCKET) g_inet = bind_inet();
-            make_identity();
-            g_info_state = INFO_NEED_CODE;
-            say("Ваш код скопирован - отправьте его %s. Затем скопируйте его код и нажмите Ctrl+V.",
-                g_role == ROLE_HOST ? "другу" : "хосту");
+            if (!make_identity()) {
+                g_info_state = INFO_ERROR;
+                send_info();
+            } else {
+                g_info_state = INFO_NEED_CODE;
+                say("Ваш код скопирован - отправьте его %s. Затем скопируйте его код и нажмите Ctrl+V.",
+                    g_role == ROLE_HOST ? "другу" : "хосту");
+            }
         } else if (c->op == CMD_PEER_CODE && g_info_state == INFO_NEED_CODE) {
             c->text[sizeof c->text - 1] = 0;
             if (set_peer(c->text)) online_loop();

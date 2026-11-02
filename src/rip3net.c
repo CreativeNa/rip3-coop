@@ -946,6 +946,7 @@ static int key_edge(int vk) {
 
 static HWND g_overlay;
 static volatile int g_screen_open;
+static int g_mode;                       /* 0 = internet/STUN, 1 = Radmin VPN */
 static uint8_t g_queued_cmd;
 static char g_queued_text[64];
 
@@ -1012,7 +1013,7 @@ static void disconnect(void) {
 }
 
 /* screen layout in game space: 1024x768, origin in the centre (the cursor's space) */
-enum { B_HOST = 1, B_JOIN, B_BOT, B_PASTE, B_COPY, B_START, B_STOP, B_DISCONNECT, B_BACK };
+enum { B_HOST = 1, B_JOIN, B_BOT, B_PASTE, B_COPY, B_START, B_STOP, B_DISCONNECT, B_BACK, B_MODE };
 typedef struct { int id; const char *label; } button;
 #define SCR_W 560
 #define BTN_W 380
@@ -1025,15 +1026,21 @@ static int screen_content(char lines[6][200], button *b, int *nb) {
     const char *role = g_info.role == ROLE_HOST ? "хост (первый игрок)" : "второй игрок";
     int launching = g_queued_cmd || preparing() || (link_alive() && g_info.state == INFO_IDLE && !g_info.note[0]);
     if (launching) {
-        snprintf(lines[n++], 200, "Подготовка...  Узнаю внешний адрес.");
+        snprintf(lines[n++], 200, g_mode ? "Подготовка...  Беру адрес Radmin VPN."
+                                         : "Подготовка...  Узнаю внешний адрес.");
     } else if (!link_alive() || g_info.state == INFO_IDLE) {
-        snprintf(lines[n++], 200, "Игра вдвоём через интернет по коду.");
+        snprintf(lines[n++], 200, "Способ: %s", g_mode ? "Radmin VPN (26.x)" : "интернет, код через STUN");
+        if (g_mode) snprintf(lines[n++], 200, "Разрешите UDP 27605 в брандмауэре Windows.");
         snprintf(lines[n++], 200, "Хост ведёт меню, друг - второй игрок.");
+        b[(*nb)++] = (button){ B_MODE, g_mode ? "Переключить на интернет" : "Переключить на Radmin VPN" };
         b[(*nb)++] = (button){ B_HOST, "Создать игру" };
         b[(*nb)++] = (button){ B_JOIN, "Подключиться к другу" };
         b[(*nb)++] = (button){ B_BOT, "Тест: бот - второй игрок" };
+    } else if (g_info.state == INFO_ERROR) {
+        snprintf(lines[n++], 200, "%s", g_info.note[0] ? g_info.note : "Ошибка соединения.");
+        b[(*nb)++] = (button){ B_DISCONNECT, "Попробовать снова" };
     } else {
-        snprintf(lines[n++], 200, "Вы: %s", role);
+        snprintf(lines[n++], 200, "Вы: %s   Способ: %s", role, g_mode ? "Radmin VPN" : "интернет");
         if (g_info.code[0] && g_info.state != INFO_CONNECTED) snprintf(lines[n++], 200, "Ваш код: %s", g_info.code);
         if (g_info.state == INFO_NEED_CODE) {
             snprintf(lines[n++], 200, "Отправьте код другу, скопируйте его код");
@@ -1074,15 +1081,19 @@ static void screen_click(float cx, float cy) {
         RECT r = button_rect(n, nb, i);
         if (cx < r.left || cx >= r.right || cy < r.top || cy >= r.bottom) continue;
         switch (b[i].id) {
-        case B_HOST: g_wait_tick = GetTickCount(); send_cmd(CMD_HOST, NULL); break;
-        case B_JOIN: g_wait_tick = GetTickCount(); send_cmd(CMD_JOIN, NULL); break;
+        case B_HOST: g_wait_tick = GetTickCount(); send_cmd(CMD_HOST, g_mode ? "radmin" : NULL); break;
+        case B_JOIN: g_wait_tick = GetTickCount(); send_cmd(CMD_JOIN, g_mode ? "radmin" : NULL); break;
         case B_BOT: g_wait_tick = GetTickCount(); g_ai = 1; send_cmd(CMD_BOT_FRIEND, NULL); break;
         case B_PASTE: paste_code(); break;
         case B_COPY: copy_code(); break;
         case B_START: start_host(); g_screen_open = 0; break;
         case B_STOP: send_stop(); end_session("хост остановил"); break;
         case B_DISCONNECT: disconnect(); break;
-        case B_BACK: g_screen_open = 0; break;
+        case B_BACK:
+            if (g_info.state == INFO_ERROR) disconnect();
+            g_screen_open = 0;
+            break;
+        case B_MODE: g_mode = !g_mode; break;
         }
         return;
     }
