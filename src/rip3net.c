@@ -991,7 +991,6 @@ static int key_edge(int vk) {
 static HWND g_overlay;
 static volatile int g_screen_open;
 static int g_mode;                       /* 0 = internet/STUN, 1 = Radmin VPN */
-static int g_settings;                   /* co-op screen shows the mod settings page */
 static uint8_t g_queued_cmd;
 static char g_queued_text[64];
 
@@ -1058,7 +1057,7 @@ static void disconnect(void) {
 }
 
 /* screen layout in game space: 1024x768, origin in the centre (the cursor's space) */
-enum { B_HOST = 1, B_JOIN, B_BOT, B_PASTE, B_COPY, B_START, B_STOP, B_DISCONNECT, B_BACK, B_MODE, B_SETTINGS, B_LANG };
+enum { B_HOST = 1, B_JOIN, B_BOT, B_PASTE, B_COPY, B_START, B_STOP, B_DISCONNECT, B_BACK, B_MODE };
 typedef struct { int id; const char *label; } button;
 #define SCR_W 560
 #define BTN_W 380
@@ -1068,14 +1067,6 @@ typedef struct { int id; const char *label; } button;
 static int screen_content(char lines[6][200], button *b, int *nb) {
     int n = 0;
     *nb = 0;
-    if (g_settings) {
-        snprintf(lines[n++], 200, "Настройки мода");
-        snprintf(lines[n++], 200, "Язык игры: %s", g_lang_ru ? "русский" : "English");
-        snprintf(lines[n++], 200, "Применится после перезапуска игры.");
-        b[(*nb)++] = (button){ B_LANG, g_lang_ru ? "Переключить на English" : "Переключить на русский" };
-        b[(*nb)++] = (button){ B_BACK, "Назад" };
-        return n;
-    }
     const char *role = g_info.role == ROLE_HOST ? "хост (первый игрок)" : "второй игрок";
     int launching = g_queued_cmd || preparing() || (link_alive() && g_info.state == INFO_IDLE && !g_info.note[0]);
     if (launching) {
@@ -1090,7 +1081,6 @@ static int screen_content(char lines[6][200], button *b, int *nb) {
         b[(*nb)++] = (button){ B_HOST, "Создать игру" };
         b[(*nb)++] = (button){ B_JOIN, "Подключиться к другу" };
         b[(*nb)++] = (button){ B_BOT, "Тест: бот - второй игрок" };
-        b[(*nb)++] = (button){ B_SETTINGS, "Настройки" };
     } else if (g_info.state == INFO_ERROR) {
         snprintf(lines[n++], 200, "%s", g_info.note[0] ? g_info.note : "Ошибка соединения.");
         b[(*nb)++] = (button){ B_DISCONNECT, "Попробовать снова" };
@@ -1145,22 +1135,17 @@ static void screen_click(float cx, float cy) {
         case B_STOP: send_stop(); end_session("хост остановил"); break;
         case B_DISCONNECT: disconnect(); break;
         case B_BACK:
-            if (g_settings) g_settings = 0;
-            else {
-                if (g_info.state == INFO_ERROR) disconnect();
-                g_screen_open = 0;
-            }
+            if (g_info.state == INFO_ERROR) disconnect();
+            g_screen_open = 0;
             break;
         case B_MODE: g_mode = !g_mode; break;
-        case B_SETTINGS: g_settings = 1; break;
-        case B_LANG: g_lang_ru = !g_lang_ru; save_language(); break;
         }
         return;
     }
 }
 
 /* called by the patched MULTIPLAYER button check in FUN_0040f600 (registers saved) */
-static void __cdecl open_coop_screen(void) { g_settings = 0; g_screen_open = 1; }
+static void __cdecl open_coop_screen(void) { g_screen_open = 1; }
 
 static int hook_multiplayer_button(void) {
     /* buttons: game+0x15418 is MULTIPLAYER (created at y=-20 in FUN_0040c210).
@@ -1203,8 +1188,30 @@ static void screen_keys(int fg) {
     }
 }
 
+/* The mod settings live in the main menu, not in the co-op screen. */
+static int main_menu_visible(void) {
+    return g_state == S_IDLE && *(const int *)(GAME + 0xB68) == 1 && *(const int *)(GAME + 0xB74) == 0;
+}
+static RECT lang_rect(void) {
+    RECT r = { 300, 326, 500, 358 };
+    return r;
+}
+static int lang_hit(float cx, float cy) {
+    RECT r = lang_rect();
+    return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
+}
+
 /* my_msgproc: while the screen is open the menu underneath gets no clicks or keys */
 static int screen_message(uint32_t msg, uint32_t wparam) {
+    if (!g_screen_open && !g_in_dispatch && msg == WM_LBUTTONDOWN && g_input_obj && main_menu_visible()) {
+        uint8_t *in = (uint8_t *)g_input_obj;
+        float cx = *(float *)(in + 0x26C), cy = *(float *)(in + 0x270);
+        if (lang_hit(cx, cy)) {
+            g_lang_ru = !g_lang_ru;
+            save_language();
+            return 1;
+        }
+    }
     if (!g_screen_open || g_in_dispatch) return 0;
     if (msg == WM_LBUTTONDOWN && g_input_obj) {
         uint8_t *in = (uint8_t *)g_input_obj;
@@ -1239,6 +1246,27 @@ static void paint_overlay(HDC dc, RECT *rc) {
 #define GX(x) ((int)(((x) + 512) * sx))
 #define GY(y) ((int)(((y) + 384) * sy))
     int connected = g_info.state == INFO_CONNECTED;
+
+    if (!g_screen_open && main_menu_visible()) {
+        RECT lr = lang_rect();
+        RECT px = { GX(lr.left), GY(lr.top), GX(lr.right), GY(lr.bottom) };
+        HBRUSH bg = CreateSolidBrush(RGB(12, 12, 20));
+        HPEN frame = CreatePen(PS_SOLID, 2, RGB(205, 205, 210));
+        HGDIOBJ ob = SelectObject(dc, bg), op = SelectObject(dc, frame);
+        RoundRect(dc, px.left, px.top, px.right, px.bottom, (int)(12 * sx), (int)(12 * sy));
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(bg);
+        DeleteObject(frame);
+        HFONT f = CreateFontW((int)(20 * sy), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
+        HGDIOBJ of = SelectObject(dc, f);
+        SetTextColor(dc, RGB(30, 235, 20));
+        char s[32];
+        snprintf(s, sizeof s, "Язык: %s", g_lang_ru ? "RU" : "EN");
+        text_w(dc, px.left, px.top + (int)(3 * sy), s, px.right - px.left);
+        SelectObject(dc, of);
+        DeleteObject(f);
+    }
 
     if (!g_screen_open) {
         if (!connected && g_state == S_IDLE) return;
@@ -1336,7 +1364,7 @@ static LRESULT CALLBACK overlay_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         DWORD fg_pid = 0;
         HWND fg = GetForegroundWindow();
         GetWindowThreadProcessId(fg, &fg_pid);
-        int visible = g_screen_open || g_info.state == INFO_CONNECTED || g_state != S_IDLE;
+        int visible = g_screen_open || g_info.state == INFO_CONNECTED || g_state != S_IDLE || main_menu_visible();
         if (visible && fg_pid == GetCurrentProcessId() && fg != w && !IsIconic(fg)) {
             RECT r;
             GetWindowRect(fg, &r); /* the game window (the first window found may be another one) */
