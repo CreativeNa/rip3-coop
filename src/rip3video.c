@@ -446,6 +446,35 @@ static void fix_audio(void) {
 
 /* ---- window ---- */
 
+/* Windows can reset a borderless window after Win+D, a display-mode change or a
+   remote-session reconnect. Put it back on the monitor instead of leaving the game
+   in a small window. Minimized windows are left alone. */
+static DWORD WINAPI window_guard(LPVOID p) {
+    (void)p;
+    int was_bad = 0;
+    for (;;) {
+        Sleep(500);
+        if (g_mode != MODE_BORDERLESS || !g_hwnd || !IsWindow(g_hwnd) || IsIconic(g_hwnd)) continue;
+        RECT wr, mr = monitor_rect(g_hwnd);
+        if (!GetWindowRect(g_hwnd, &wr)) continue;
+        LONG style = GetWindowLongA(g_hwnd, GWL_STYLE);
+        LONG ex = GetWindowLongA(g_hwnd, GWL_EXSTYLE);
+        int bad_rect = abs(wr.left - mr.left) > 1 || abs(wr.top - mr.top) > 1 ||
+                       abs((wr.right - wr.left) - (mr.right - mr.left)) > 1 ||
+                       abs((wr.bottom - wr.top) - (mr.bottom - mr.top)) > 1;
+        int bad_style = (style & WS_POPUP) == 0 || (ex & WS_EX_TOPMOST) != 0;
+        if (!bad_rect && !bad_style) { was_bad = 0; continue; }
+        SetWindowLongA(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowLongA(g_hwnd, GWL_EXSTYLE, ex & ~WS_EX_TOPMOST);
+        SetWindowPos(g_hwnd, HWND_TOP, mr.left, mr.top, mr.right - mr.left, mr.bottom - mr.top,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED);
+        if (!was_bad) logf_("window reset: restored borderless %ldx%ld at %ld,%ld",
+                            (long)(mr.right - mr.left), (long)(mr.bottom - mr.top), (long)mr.left, (long)mr.top);
+        was_bad = 1;
+    }
+    return 0;
+}
+
 static HWND WINAPI my_CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD style, int x, int y, int w, int h,
                                       HWND parent, HMENU menu, HINSTANCE inst, LPVOID param) {
     if (!parent && title && !IsBadStringPtrA(title, 64) && strcmp(title, WINDOW_TITLE) == 0) {
@@ -464,6 +493,11 @@ static HWND WINAPI my_CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD 
         }
         g_hwnd = real_CreateWindowExA(ex, cls, title, style, x, y, w, h, parent, menu, inst, param);
         logf_("window %p mode=%d %dx%d at %d,%d", (void *)g_hwnd, g_mode, w, h, x, y);
+        static int guard_started;
+        if (g_hwnd && !guard_started) {
+            guard_started = 1;
+            CloseHandle(CreateThread(NULL, 0, window_guard, NULL, 0, NULL));
+        }
         if (g_skip_logos) skip_logos();
         if (g_profile) { g_main_tid = GetCurrentThreadId(); CloseHandle(CreateThread(NULL, 0, profiler, NULL, 0, NULL)); }
         fix_audio();
