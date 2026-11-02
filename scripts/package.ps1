@@ -13,7 +13,7 @@ if (-not $SkipBuild) {
 }
 
 $required = @(
-    'start_rip3.cmd', 'start_rip3.ps1', 'Запустить игру с модом.cmd',
+    'LICENSE', 'start_rip3.cmd', 'start_rip3.ps1', 'Запустить игру с модом.cmd',
     'build\rip3coop.exe', 'build\inject.exe',
     'build\rip3net.dll', 'build\rip3video.dll', 'build\rip3ru.dll',
     'build\rip3video.ini',
