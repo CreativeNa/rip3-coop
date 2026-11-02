@@ -78,6 +78,12 @@ powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 
 Он пересобирает всё, кладёт только файлы для игрока (без логов, PDB и кешей) в `dist/rip3-coop.zip` и добавляет `SHA256SUMS.txt` и `VERSION.txt`.
 
+Проверка реконнекта без второго ПК (синтетический HELLO с нового адреса):
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\test-reconnect.ps1
+```
+
 | Файл | Что делает |
 |---|---|
 | `src/rip3net.c` → `rip3net.dll` | сетевой кооп: lockstep, общий ввод, экран кооператива, ИИ, геймпад |
