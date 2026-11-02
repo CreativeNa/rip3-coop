@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include "netproto.h"
 
@@ -27,6 +28,21 @@ static uint16_t g_nonce, g_peer_nonce, g_rtt;
 static DWORD g_last_peer;
 
 /* ---- helpers ---- */
+
+/* Persistent connection log next to the exe; a hidden --service has no console. */
+static FILE *g_netlog;
+static void netlog(const char *fmt, ...) {
+    if (!g_netlog) return;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    fprintf(g_netlog, "%02d:%02d:%02d ", t.wHour, t.wMinute, t.wSecond);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_netlog, fmt, ap);
+    va_end(ap);
+    fputc('\n', g_netlog);
+    fflush(g_netlog);
+}
 
 /* service mode (started hidden by the game): the game's overlay shows the last line */
 static int g_service;
@@ -571,6 +587,9 @@ static int make_identity(void) {
         g_pub.sin_port = local.sin_port;
         encode_code(ip, ntohs(g_pub.sin_port), g_code);
         copy_to_clipboard(g_code);
+        netlog("mode=radmin local=%u.%u.%u.%u port=%u code=%s",
+               ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255,
+               (unsigned)ntohs(g_pub.sin_port), g_code);
         say("Radmin VPN: код скопирован (порт %u). Разрешите UDP 27605 в брандмауэре.",
             (unsigned)ntohs(g_pub.sin_port));
         return 1;
@@ -590,6 +609,8 @@ static int make_identity(void) {
     }
     encode_code(ntohl(g_pub.sin_addr.s_addr), ntohs(g_pub.sin_port), g_code);
     copy_to_clipboard(g_code);
+    netlog("mode=internet public=%s:%u code=%s have_pub=%d symmetric=%d",
+           inet_ntoa(g_pub.sin_addr), (unsigned)ntohs(g_pub.sin_port), g_code, have_pub, symmetric);
     if (!have_pub) say("Внешний адрес не найден - код сработает только в одной локальной сети.");
     else if (symmetric) say("Внимание: строгий NAT у роутера - соединение может не получиться.");
     else say("Ваш код скопирован.");
@@ -605,6 +626,7 @@ static int set_peer(const char *text) {
     g_peer_pub.sin_family = AF_INET;
     g_peer_pub.sin_addr.s_addr = htonl(ip);
     g_peer_pub.sin_port = htons(port);
+    netlog("peer code -> %s:%u", inet_ntoa(g_peer_pub.sin_addr), (unsigned)port);
     /* same public address = same home network: find each other by LAN broadcast */
     memset(&g_peer_lan, 0, sizeof g_peer_lan);
     if (g_peer_pub.sin_addr.s_addr == g_pub.sin_addr.s_addr) {
@@ -634,7 +656,11 @@ static void online_loop(void) {
             say("Жду друга (%lu с). Он тоже должен ввести ваш код.", (now - t_start) / 1000);
             last_wait_msg = now;
         }
-        if (g_connected && now - g_last_peer > 5000 && !lost_reported) { say("Друг не отвечает..."); lost_reported = 1; }
+        if (g_connected && now - g_last_peer > 5000 && !lost_reported) {
+            netlog("peer silent for 5 s");
+            say("Друг не отвечает...");
+            lost_reported = 1;
+        }
 
         fd_set rd;
         FD_ZERO(&rd);
@@ -657,12 +683,19 @@ static void online_loop(void) {
                     g_peer = from;
                     g_peer_nonce = h->nonce;
                     g_info_state = INFO_CONNECTED;
+                    netlog("connected peer=%s:%u role=%d mode=%s", inet_ntoa(from.sin_addr),
+                           (unsigned)ntohs(from.sin_port), g_role, g_radmin ? "radmin" : "internet");
                     say(g_role == ROLE_HOST ? "Соединено! Когда оба в главном меню - F8, затем «ДВА ИГРОКА»."
                                             : "Соединено! Ждите в главном меню, хост начнёт. Вы: WASD, H/K поворот, J огонь, U доп.");
                     send_hello();
                 } else if (h->nonce == g_peer_nonce &&
                            (from.sin_addr.s_addr != g_peer.sin_addr.s_addr || from.sin_port != g_peer.sin_port)) {
                     /* The friend's NAT mapping changed: follow the new source address. */
+                    char oldip[16], newip[16];
+                    snprintf(oldip, sizeof oldip, "%s", inet_ntoa(g_peer.sin_addr));
+                    snprintf(newip, sizeof newip, "%s", inet_ntoa(from.sin_addr));
+                    netlog("reconnect old=%s:%u new=%s:%u", oldip,
+                           (unsigned)ntohs(g_peer.sin_port), newip, (unsigned)ntohs(from.sin_port));
                     g_peer = from;
                     g_last_peer = GetTickCount();
                     lost_reported = 0;
@@ -711,6 +744,7 @@ static void service_idle(void) {
 /* rip3coop.exe --service <game pid>: no window, driven by the in-game panel (F7) */
 static void run_service(DWORD pid) {
     g_service = 1;
+    netlog("service for game pid=%lu", pid);
     g_game = OpenProcess(SYNCHRONIZE, FALSE, pid);
     g_idle_hook = service_idle;
     g_info_state = INFO_IDLE;
@@ -729,6 +763,7 @@ static void run_service(DWORD pid) {
         if ((c->op == CMD_HOST || c->op == CMD_JOIN) && g_info_state == INFO_IDLE) {
             g_role = c->op == CMD_HOST ? ROLE_HOST : ROLE_CLIENT;
             g_radmin = !strcmp(c->text, "radmin");
+            netlog("cmd %s mode=%s", c->op == CMD_HOST ? "host" : "join", g_radmin ? "radmin" : "internet");
             if (g_inet == INVALID_SOCKET) g_inet = bind_inet();
             if (!make_identity()) {
                 g_info_state = INFO_ERROR;
@@ -757,6 +792,8 @@ int main(int argc, char **argv) {
     GetModuleFileNameA(NULL, exe, sizeof exe);
     *strrchr(exe, '\\') = 0;
     SetCurrentDirectoryA(exe); /* REC_DIR is relative to build\ */
+    g_netlog = fopen("coop.log", "a");
+    netlog("=== rip3coop start argc=%d ===", argc);
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
     srand(GetTickCount());
