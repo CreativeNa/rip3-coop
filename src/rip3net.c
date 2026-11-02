@@ -27,7 +27,7 @@
 #define GAME             ((uint8_t *)0x00503B50u)
 
 #define FIXED_HZ         60.0
-#define PEER_TIMEOUT_MS  10000
+#define PEER_TIMEOUT_MS  30000
 #define MIN_DELAY        3
 #define MAX_DELAY        15
 
@@ -48,6 +48,7 @@ static uint32_t g_have_local, g_have_remote, g_peer_ack, g_frame, g_delay;
 typedef struct { uint32_t frame, seed; uint16_t calls; uint8_t valid; } check_slot;
 static check_slot g_my_checks[NP_RING], g_peer_checks[NP_RING];
 static int g_desync_reported;
+static int g_link_lost;                  /* waiting for the friend after a short outage */
 static np_msg g_pending[256];
 static int g_npending;
 static int g_in_dispatch;
@@ -273,6 +274,7 @@ static void begin_running(void) {
     memset(g_my_checks, 0, sizeof g_my_checks);
     memset(g_peer_checks, 0, sizeof g_peer_checks);
     g_desync_reported = 0;
+    g_link_lost = 0;
     g_npending = 0;
     g_stalls = 0;
     g_seed = g_start.seed;
@@ -498,6 +500,10 @@ static void on_packet(const uint8_t *p, int n, const struct sockaddr_in *from) {
         }
         if (h->ack > g_peer_ack && h->ack <= g_have_local) g_peer_ack = h->ack;
         g_last_peer_tick = GetTickCount();
+        if (g_link_lost) {
+            g_link_lost = 0;
+            status("Связь с другом восстановлена");
+        }
         break;
     }
     case PK_RESYNC: {
@@ -1327,11 +1333,15 @@ static void __fastcall my_frame(void *game) {
     DWORD now = GetTickCount();
     if (now - g_last_peer_tick > PEER_TIMEOUT_MS) {
         send_stop();
-        end_session("нет связи с другом 10 секунд");
+        end_session("нет связи с другом 30 секунд");
         orig_frame(game);
         return;
     }
-    if (now - g_last_status_tick > 5000) {
+    if (!g_link_lost && now - g_last_peer_tick > 5000) {
+        g_link_lost = 1;
+        status("Связь с другом пропала. Жду до 30 секунд...");
+    }
+    if (!g_link_lost && now - g_last_status_tick > 5000) {
         status("кадр %u, ожиданий друга %u, задержка %u", g_frame, g_stalls, g_delay);
         g_last_status_tick = now;
     }

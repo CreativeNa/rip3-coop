@@ -655,9 +655,18 @@ static void online_loop(void) {
                 if (!g_connected) {
                     g_connected = 1;
                     g_peer = from;
+                    g_peer_nonce = h->nonce;
                     g_info_state = INFO_CONNECTED;
                     say(g_role == ROLE_HOST ? "Соединено! Когда оба в главном меню - F8, затем «ДВА ИГРОКА»."
                                             : "Соединено! Ждите в главном меню, хост начнёт. Вы: WASD, H/K поворот, J огонь, U доп.");
+                    send_hello();
+                } else if (h->nonce == g_peer_nonce &&
+                           (from.sin_addr.s_addr != g_peer.sin_addr.s_addr || from.sin_port != g_peer.sin_port)) {
+                    /* The friend's NAT mapping changed: follow the new source address. */
+                    g_peer = from;
+                    g_last_peer = GetTickCount();
+                    lost_reported = 0;
+                    say("Связь восстановлена: адрес друга обновился.");
                     send_hello();
                 }
             }
