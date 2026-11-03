@@ -58,29 +58,39 @@ Ok "Все файлы на месте."
 # 2. Игра не должна быть запущена: инжектор подключается только к новому процессу.
 $old = @(Get-Process -Name RIP3 -ErrorAction SilentlyContinue)
 if ($old.Count -gt 0) {
-    Warn "RIP 3 уже запущена."
-    Write-Host "    Закрой игру (сохрани прогресс) и нажми Enter..." -ForegroundColor Yellow
-    while (@(Get-Process -Name RIP3 -ErrorAction SilentlyContinue).Count -gt 0) {
-        Read-Host | Out-Null
+    Warn "RIP 3 уже запущена, жду закрытия..."
+    $until = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $until -and @(Get-Process -Name RIP3 -ErrorAction SilentlyContinue).Count -gt 0) {
+        Start-Sleep -Milliseconds 500
     }
+    if (@(Get-Process -Name RIP3 -ErrorAction SilentlyContinue).Count -gt 0) {
+        Fail "Игра не закрылась за 20 секунд. Закрой её и повтори." 1
+    }
+    Start-Sleep -Seconds 2
     Ok "Игра закрыта, продолжаю."
 }
 
-# 3. Запускаем игру через Steam.
+# 3. Запускаем игру через Steam. После авто-перезапуска Steam иногда ещё
+#    считает старый процесс живым, поэтому пробуем несколько раз.
 Step "Запускаю Steam и RIP 3..."
-try { Start-Process 'steam://rungameid/2550' }
-catch { Fail "Не удалось открыть Steam. Запусти Steam вручную и повтори." 2 }
-
 $game = $null
-$t0 = Get-Date
-while (((Get-Date) - $t0).TotalSeconds -lt 120) {
-    $game = Get-Process -Name RIP3 -ErrorAction SilentlyContinue |
-            Sort-Object StartTime -Descending | Select-Object -First 1
-    if ($game) { break }
-    Start-Sleep -Milliseconds 25
+for ($try = 1; $try -le 3 -and -not $game; $try++) {
+    try { Start-Process 'steam://rungameid/2550' }
+    catch { Fail "Не удалось открыть Steam. Запусти Steam вручную и повтори." 2 }
+    $until = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $until) {
+        $game = Get-Process -Name RIP3 -ErrorAction SilentlyContinue |
+                Sort-Object StartTime -Descending | Select-Object -First 1
+        if ($game) { break }
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not $game -and $try -lt 3) {
+        Warn "Steam не запустил игру, повторяю ($try/3)..."
+        Start-Sleep -Seconds 3
+    }
 }
 if (-not $game) {
-    Fail "Игра не запустилась за 2 минуты. Проверь, что Steam открыт и ты вошёл в аккаунт." 3
+    Fail "Игра не запустилась за минуту. Проверь, что Steam открыт и ты вошёл в аккаунт." 3
 }
 Ok "Игра запущена (PID $($game.Id))."
 

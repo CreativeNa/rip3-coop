@@ -101,11 +101,41 @@ static void load_language(void) {
     logf_("game language: %s", g_lang_ru ? "ru" : "en");
 }
 
-static void save_language(void) {
+static int save_language(void) {
     char path[MAX_PATH];
     language_path(path, sizeof path);
-    WritePrivateProfileStringA("General", "Language", g_lang_ru ? "ru" : "en", path);
-    logf_("game language set to %s (restart required)", g_lang_ru ? "ru" : "en");
+    int ok = WritePrivateProfileStringA("General", "Language", g_lang_ru ? "ru" : "en", path) != 0;
+    logf_("game language set to %s (%s)", g_lang_ru ? "ru" : "en", ok ? "restarting" : "write failed");
+    return ok;
+}
+
+/* The language table is applied at injection, so relaunch the game through the same
+   launcher. It waits for this process to exit and starts a fresh one. */
+static void restart_game(void) {
+    char root[MAX_PATH], script[MAX_PATH], ps[MAX_PATH], cmd[MAX_PATH * 2];
+    snprintf(root, sizeof root, "%s\\..", g_dir);
+    GetFullPathNameA(root, sizeof root, root, NULL);
+    snprintf(script, sizeof script, "%s\\start_rip3.ps1", root);
+    if (GetFileAttributesA(script) == INVALID_FILE_ATTRIBUTES) {
+        logf_("restart: %s not found", script);
+        return;
+    }
+    const char *windir = getenv("SystemRoot");
+    snprintf(ps, sizeof ps, "%s\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+             windir ? windir : "C:\\Windows");
+    snprintf(cmd, sizeof cmd, "\"%s\" -NoProfile -ExecutionPolicy Bypass -File \"%s\"", ps, script);
+    STARTUPINFOA si = { sizeof si };
+    PROCESS_INFORMATION pi;
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, root, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        logf_("restart: launcher started, closing the game");
+    } else {
+        logf_("restart: CreateProcess failed (%lu)", GetLastError());
+    }
+    HWND w = FindWindowA(NULL, "RIP3: The Last Hero");
+    if (w) PostMessageA(w, WM_CLOSE, 0, 0);
+    else ExitProcess(0);
 }
 
 /* ---- patching ---- */
@@ -1208,7 +1238,7 @@ static int screen_message(uint32_t msg, uint32_t wparam) {
         float cx = *(float *)(in + 0x26C), cy = *(float *)(in + 0x270);
         if (lang_hit(cx, cy)) {
             g_lang_ru = !g_lang_ru;
-            save_language();
+            if (save_language()) restart_game();
             return 1;
         }
     }
