@@ -66,28 +66,23 @@ if ($old.Count -gt 0) {
     if (@(Get-Process -Name RIP3 -ErrorAction SilentlyContinue).Count -gt 0) {
         Fail "Игра не закрылась за 20 секунд. Закрой её и повтори." 1
     }
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 6
     Ok "Игра закрыта, продолжаю."
 }
 
-# 3. Запускаем игру через Steam. После авто-перезапуска Steam иногда ещё
-#    считает старый процесс живым, поэтому пробуем несколько раз.
+# 3. Один запуск через Steam. Повторных запусков нет: если Steam считает
+#    старый процесс живым, окно с ошибкой должен увидеть пользователь.
 Step "Запускаю Steam и RIP 3..."
+try { Start-Process 'steam://rungameid/2550' }
+catch { Fail "Не удалось открыть Steam. Запусти Steam вручную и повтори." 2 }
+
 $game = $null
-for ($try = 1; $try -le 3 -and -not $game; $try++) {
-    try { Start-Process 'steam://rungameid/2550' }
-    catch { Fail "Не удалось открыть Steam. Запусти Steam вручную и повтори." 2 }
-    $until = (Get-Date).AddSeconds(20)
-    while ((Get-Date) -lt $until) {
-        $game = Get-Process -Name RIP3 -ErrorAction SilentlyContinue |
-                Sort-Object StartTime -Descending | Select-Object -First 1
-        if ($game) { break }
-        Start-Sleep -Milliseconds 25
-    }
-    if (-not $game -and $try -lt 3) {
-        Warn "Steam не запустил игру, повторяю ($try/3)..."
-        Start-Sleep -Seconds 3
-    }
+$until = (Get-Date).AddSeconds(60)
+while ((Get-Date) -lt $until) {
+    $game = Get-Process -Name RIP3 -ErrorAction SilentlyContinue |
+            Sort-Object StartTime -Descending | Select-Object -First 1
+    if ($game) { break }
+    Start-Sleep -Milliseconds 50
 }
 if (-not $game) {
     Fail "Игра не запустилась за минуту. Проверь, что Steam открыт и ты вошёл в аккаунт." 3

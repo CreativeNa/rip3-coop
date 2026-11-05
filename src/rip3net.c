@@ -126,16 +126,17 @@ static void restart_game(void) {
     snprintf(cmd, sizeof cmd, "\"%s\" -NoProfile -ExecutionPolicy Bypass -File \"%s\"", ps, script);
     STARTUPINFOA si = { sizeof si };
     PROCESS_INFORMATION pi;
-    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, root, &si, &pi)) {
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        logf_("restart: launcher started, closing the game");
-    } else {
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, root, &si, &pi)) {
         logf_("restart: CreateProcess failed (%lu)", GetLastError());
+        return;
     }
-    HWND w = FindWindowA(NULL, "RIP3: The Last Hero");
-    if (w) PostMessageA(w, WM_CLOSE, 0, 0);
-    else ExitProcess(0);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    logf_("restart: launcher started, terminating the game");
+    /* ExitProcess can linger in DLL detach; Steam then keeps App Running and
+       refuses the relaunch (AppError_16). A hard terminate makes it clear fast. */
+    TerminateProcess(GetCurrentProcess(), 0);
+    ExitProcess(0);
 }
 
 /* ---- patching ---- */
@@ -1222,26 +1223,8 @@ static void screen_keys(int fg) {
 static int main_menu_visible(void) {
     return g_state == S_IDLE && *(const int *)(GAME + 0xB68) == 1 && *(const int *)(GAME + 0xB74) == 0;
 }
-static RECT lang_rect(void) {
-    RECT r = { 300, 326, 500, 358 };
-    return r;
-}
-static int lang_hit(float cx, float cy) {
-    RECT r = lang_rect();
-    return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
-}
-
 /* my_msgproc: while the screen is open the menu underneath gets no clicks or keys */
 static int screen_message(uint32_t msg, uint32_t wparam) {
-    if (!g_screen_open && !g_in_dispatch && msg == WM_LBUTTONDOWN && g_input_obj && main_menu_visible()) {
-        uint8_t *in = (uint8_t *)g_input_obj;
-        float cx = *(float *)(in + 0x26C), cy = *(float *)(in + 0x270);
-        if (lang_hit(cx, cy)) {
-            g_lang_ru = !g_lang_ru;
-            if (save_language()) restart_game();
-            return 1;
-        }
-    }
     if (!g_screen_open || g_in_dispatch) return 0;
     if (msg == WM_LBUTTONDOWN && g_input_obj) {
         uint8_t *in = (uint8_t *)g_input_obj;
@@ -1276,27 +1259,6 @@ static void paint_overlay(HDC dc, RECT *rc) {
 #define GX(x) ((int)(((x) + 512) * sx))
 #define GY(y) ((int)(((y) + 384) * sy))
     int connected = g_info.state == INFO_CONNECTED;
-
-    if (!g_screen_open && main_menu_visible()) {
-        RECT lr = lang_rect();
-        RECT px = { GX(lr.left), GY(lr.top), GX(lr.right), GY(lr.bottom) };
-        HBRUSH bg = CreateSolidBrush(RGB(12, 12, 20));
-        HPEN frame = CreatePen(PS_SOLID, 2, RGB(205, 205, 210));
-        HGDIOBJ ob = SelectObject(dc, bg), op = SelectObject(dc, frame);
-        RoundRect(dc, px.left, px.top, px.right, px.bottom, (int)(12 * sx), (int)(12 * sy));
-        SelectObject(dc, ob);
-        SelectObject(dc, op);
-        DeleteObject(bg);
-        DeleteObject(frame);
-        HFONT f = CreateFontW((int)(20 * sy), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
-        HGDIOBJ of = SelectObject(dc, f);
-        SetTextColor(dc, RGB(30, 235, 20));
-        char s[32];
-        snprintf(s, sizeof s, "Язык: %s", g_lang_ru ? "RU" : "EN");
-        text_w(dc, px.left, px.top + (int)(3 * sy), s, px.right - px.left);
-        SelectObject(dc, of);
-        DeleteObject(f);
-    }
 
     if (!g_screen_open) {
         if (!connected && g_state == S_IDLE) return;
@@ -1394,7 +1356,7 @@ static LRESULT CALLBACK overlay_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         DWORD fg_pid = 0;
         HWND fg = GetForegroundWindow();
         GetWindowThreadProcessId(fg, &fg_pid);
-        int visible = g_screen_open || g_info.state == INFO_CONNECTED || g_state != S_IDLE || main_menu_visible();
+        int visible = g_screen_open || g_info.state == INFO_CONNECTED || g_state != S_IDLE;
         if (visible && fg_pid == GetCurrentProcessId() && fg != w && !IsIconic(fg)) {
             RECT r;
             GetWindowRect(fg, &r); /* the game window (the first window found may be another one) */
@@ -1417,6 +1379,79 @@ static DWORD WINAPI overlay_thread(LPVOID p) {
                                 wc.lpszClassName, L"", WS_POPUP, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
     SetLayeredWindowAttributes(g_overlay, OV_KEY, 205, LWA_COLORKEY | LWA_ALPHA); /* the game's cursor shows through */
     SetTimer(g_overlay, 1, 33, NULL);
+    MSG m;
+    while (GetMessageW(&m, NULL, 0, 0) > 0) DispatchMessageW(&m);
+    return 0;
+}
+
+/* A small real window for the language switch. Unlike the click-through co-op
+   overlay it receives mouse clicks directly, so no game-cursor coordinates. */
+static HWND g_lang_wnd;
+
+static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+    (void)wp; (void)lp;
+    if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    if (m == WM_ERASEBKGND) return 1;
+    if (m == WM_LBUTTONDOWN) {
+        g_lang_ru = !g_lang_ru;
+        if (save_language()) restart_game();
+        return 0;
+    }
+    if (m == WM_TIMER) {
+        HWND game = FindWindowA(NULL, "RIP3: The Last Hero");
+        if (game && main_menu_visible() && !g_screen_open) {
+            RECT r;
+            GetWindowRect(game, &r);
+            SetWindowPos(w, HWND_TOPMOST, r.right - 224, r.bottom - 62, 200, 38,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            InvalidateRect(w, NULL, FALSE);
+        } else {
+            ShowWindow(w, SW_HIDE);
+        }
+        return 0;
+    }
+    if (m == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(w, &ps);
+        RECT rc;
+        GetClientRect(w, &rc);
+        HBRUSH bg = CreateSolidBrush(RGB(12, 12, 20));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(205, 205, 210));
+        HGDIOBJ op = SelectObject(dc, pen);
+        HBRUSH old = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, 1, 1, rc.right - 1, rc.bottom - 1);
+        SelectObject(dc, old);
+        SelectObject(dc, op);
+        DeleteObject(pen);
+        SetBkMode(dc, TRANSPARENT);
+        HFONT f = CreateFontW(18, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                              ANTIALIASED_QUALITY, 0, L"Segoe UI");
+        HGDIOBJ of = SelectObject(dc, f);
+        SetTextColor(dc, RGB(30, 235, 20));
+        char s[32];
+        snprintf(s, sizeof s, "Язык: %s", g_lang_ru ? "RU" : "EN");
+        text_w(dc, 0, 8, s, rc.right);
+        SelectObject(dc, of);
+        DeleteObject(f);
+        EndPaint(w, &ps);
+        return 0;
+    }
+    return DefWindowProcW(w, m, wp, lp);
+}
+
+static DWORD WINAPI lang_thread(LPVOID p) {
+    (void)p;
+    WNDCLASSW wc = { 0 };
+    wc.lpfnWndProc = lang_proc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"rip3coop_language";
+    RegisterClassW(&wc);
+    g_lang_wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                 wc.lpszClassName, L"", WS_POPUP, 0, 0, 200, 38,
+                                 NULL, NULL, wc.hInstance, NULL);
+    SetTimer(g_lang_wnd, 1, 250, NULL);
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) DispatchMessageW(&m);
     return 0;
@@ -1567,6 +1602,7 @@ static DWORD WINAPI install(LPVOID self) {
     ioctlsocket(g_sock, FIONBIO, &nb);
     CreateThread(NULL, 0, keep_active, NULL, 0, NULL);
     CreateThread(NULL, 0, overlay_thread, NULL, 0, NULL);
+    CreateThread(NULL, 0, lang_thread, NULL, 0, NULL);
     logf_("MULTIPLAYER button -> co-op screen: %d", hook_multiplayer_button());
     logf_("listening on 127.0.0.1:%d", NP_PORT_DLL);
     return 0;
