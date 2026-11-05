@@ -67,6 +67,20 @@ if ($old.Count -gt 0) {
         Fail "Игра не закрылась за 20 секунд. Закрой её и повтори." 1
     }
     Start-Sleep -Seconds 6
+    # Steam can keep App Running for up to a minute after a hard close and then
+    # rejects steam://rungameid with "already running". Wait for its own log.
+    $steamLog = Join-Path ${env:ProgramFiles(x86)} 'Steam\logs\content_log.txt'
+    if (Test-Path -LiteralPath $steamLog) {
+        Write-Log "Waiting for Steam to clear App Running..."
+        $until = (Get-Date).AddSeconds(90)
+        while ((Get-Date) -lt $until) {
+            $last = Get-Content -LiteralPath $steamLog -Tail 80 -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -match 'AppID 2550 state changed' } |
+                    Select-Object -Last 1
+            if ($last -and $last -notmatch 'App Running') { break }
+            Start-Sleep -Seconds 2
+        }
+    }
     Ok "Игра закрыта, продолжаю."
 }
 

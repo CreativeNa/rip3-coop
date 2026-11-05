@@ -1417,9 +1417,9 @@ static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         static int shown;
         HWND game = FindWindowA(NULL, "RIP3: The Last Hero");
         if (game && main_menu_visible() && !g_screen_open) {
-            RECT r;
-            GetWindowRect(game, &r);
-            SetWindowPos(w, HWND_TOPMOST, r.right - 264, r.bottom - 72, 240, 44,
+            RECT work;
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0); /* above the taskbar */
+            SetWindowPos(w, HWND_TOPMOST, work.right - 264, work.bottom - 68, 240, 44,
                          SWP_SHOWWINDOW);
             if (!shown) { shown = 1; logf_("language window shown"); }
             InvalidateRect(w, NULL, FALSE);
