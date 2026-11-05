@@ -106,38 +106,8 @@ static int save_language(void) {
     char path[MAX_PATH];
     language_path(path, sizeof path);
     int ok = WritePrivateProfileStringA("General", "Language", g_lang_ru ? "ru" : "en", path) != 0;
-    logf_("game language set to %s (%s)", g_lang_ru ? "ru" : "en", ok ? "restarting" : "write failed");
+    logf_("game language set to %s (%s)", g_lang_ru ? "ru" : "en", ok ? "restart required" : "write failed");
     return ok;
-}
-
-/* The language table is applied at injection, so relaunch the game through the same
-   launcher. It waits for this process to exit and starts a fresh one. */
-static void restart_game(void) {
-    char root[MAX_PATH], script[MAX_PATH], ps[MAX_PATH], cmd[MAX_PATH * 2];
-    snprintf(root, sizeof root, "%s\\..", g_dir);
-    GetFullPathNameA(root, sizeof root, root, NULL);
-    snprintf(script, sizeof script, "%s\\start_rip3.ps1", root);
-    if (GetFileAttributesA(script) == INVALID_FILE_ATTRIBUTES) {
-        logf_("restart: %s not found", script);
-        return;
-    }
-    const char *windir = getenv("SystemRoot");
-    snprintf(ps, sizeof ps, "%s\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-             windir ? windir : "C:\\Windows");
-    snprintf(cmd, sizeof cmd, "\"%s\" -NoProfile -ExecutionPolicy Bypass -File \"%s\"", ps, script);
-    STARTUPINFOA si = { sizeof si };
-    PROCESS_INFORMATION pi;
-    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, root, &si, &pi)) {
-        logf_("restart: CreateProcess failed (%lu)", GetLastError());
-        return;
-    }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    logf_("restart: launcher started, terminating the game");
-    /* ExitProcess can linger in DLL detach; Steam then keeps App Running and
-       refuses the relaunch (AppError_16). A hard terminate makes it clear fast. */
-    TerminateProcess(GetCurrentProcess(), 0);
-    ExitProcess(0);
 }
 
 /* ---- patching ---- */
@@ -1402,7 +1372,12 @@ static DWORD WINAPI overlay_thread(LPVOID p) {
    the click to its own WndProc, so my_msgproc checks the same screen rectangle. */
 static void toggle_language(void) {
     g_lang_ru = !g_lang_ru;
-    if (save_language()) restart_game();
+    if (!save_language()) return;
+    HWND w = FindWindowA(NULL, "RIP3: The Last Hero");
+    if (w) {
+        logf_("language changed: closing game; launch it manually after Steam releases it");
+        PostMessageA(w, WM_CLOSE, 0, 0);
+    }
 }
 
 static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
