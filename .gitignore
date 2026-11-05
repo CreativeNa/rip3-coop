@@ -18,6 +18,7 @@
 /build/*.log
 /build/*.bin
 /build/*.dat
+/build/rip3mod.ini
 /build/*.coopbak
 /build/zig-cache/
 /build/zig-global-cache/
