@@ -34,6 +34,7 @@
 enum { S_IDLE, S_STARTING, S_RUNNING };
 
 static SOCKET g_sock = INVALID_SOCKET;
+static HWND g_lang_wnd;
 static struct sockaddr_in g_launcher;
 static int g_link_ok, g_role, g_peer_connected;
 static uint16_t g_rtt;
@@ -988,9 +989,22 @@ static void queue_message(uint32_t msg, uint32_t wparam, uint32_t lparam) {
 }
 
 static int screen_message(uint32_t msg, uint32_t wparam);
+static int main_menu_visible(void);
+static void toggle_language(void);
 
 static int __fastcall my_msgproc(void *game, void *edx, uint32_t msg, uint32_t wparam, uint32_t lparam) {
     if (msg == WM_DESTROY) restore_own_settings();
+    if (msg == WM_LBUTTONDOWN && g_lang_wnd && main_menu_visible()) {
+        POINT p;
+        RECT r;
+        GetCursorPos(&p);
+        GetWindowRect(g_lang_wnd, &r);
+        if (PtInRect(&r, p)) {
+            logf_("language click via game");
+            toggle_language();
+            return 0;
+        }
+    }
     if (screen_message(msg, wparam)) return 0;
     if (g_state == S_RUNNING && !g_in_dispatch && msg != WM_DESTROY && msg != WM_CLOSE) {
         /* both games see the host's messages at the same frame; the client's are dropped */
@@ -1384,17 +1398,19 @@ static DWORD WINAPI overlay_thread(LPVOID p) {
     return 0;
 }
 
-/* A small real window for the language switch. Unlike the click-through co-op
-   overlay it receives mouse clicks directly, so no game-cursor coordinates. */
-static HWND g_lang_wnd;
+/* A small window for the language switch; the game's mouse capture may deliver
+   the click to its own WndProc, so my_msgproc checks the same screen rectangle. */
+static void toggle_language(void) {
+    g_lang_ru = !g_lang_ru;
+    if (save_language()) restart_game();
+}
 
 static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     (void)wp; (void)lp;
     if (m == WM_ERASEBKGND) return 1;
     if (m == WM_LBUTTONDOWN) {
         logf_("language window click");
-        g_lang_ru = !g_lang_ru;
-        if (save_language()) restart_game();
+        toggle_language();
         return 0;
     }
     if (m == WM_TIMER) {
@@ -1444,6 +1460,22 @@ static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(w, m, wp, lp);
 }
 
+static HHOOK g_mouse_hook;
+static LRESULT CALLBACK mouse_hook(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION && wp == WM_LBUTTONDOWN && g_lang_wnd && main_menu_visible()) {
+        MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
+        RECT r;
+        GetWindowRect(g_lang_wnd, &r);
+        POINT p = { m->pt.x, m->pt.y };
+        if (PtInRect(&r, p)) {
+            logf_("language click via mouse hook");
+            toggle_language();
+            return 1;
+        }
+    }
+    return CallNextHookEx(g_mouse_hook, code, wp, lp);
+}
+
 static DWORD WINAPI lang_thread(LPVOID p) {
     (void)p;
     WNDCLASSW wc = { 0 };
@@ -1454,6 +1486,7 @@ static DWORD WINAPI lang_thread(LPVOID p) {
     g_lang_wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                                  wc.lpszClassName, L"", WS_POPUP, 0, 0, 240, 44,
                                  NULL, NULL, wc.hInstance, NULL);
+    g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_hook, GetModuleHandleW(NULL), 0);
     SetTimer(g_lang_wnd, 1, 250, NULL);
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) DispatchMessageW(&m);
