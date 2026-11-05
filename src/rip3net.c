@@ -1390,22 +1390,25 @@ static HWND g_lang_wnd;
 
 static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     (void)wp; (void)lp;
-    if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     if (m == WM_ERASEBKGND) return 1;
     if (m == WM_LBUTTONDOWN) {
+        logf_("language window click");
         g_lang_ru = !g_lang_ru;
         if (save_language()) restart_game();
         return 0;
     }
     if (m == WM_TIMER) {
+        static int shown;
         HWND game = FindWindowA(NULL, "RIP3: The Last Hero");
         if (game && main_menu_visible() && !g_screen_open) {
             RECT r;
             GetWindowRect(game, &r);
-            SetWindowPos(w, HWND_TOPMOST, r.right - 224, r.bottom - 62, 200, 38,
-                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetWindowPos(w, HWND_TOPMOST, r.right - 264, r.bottom - 72, 240, 44,
+                         SWP_SHOWWINDOW);
+            if (!shown) { shown = 1; logf_("language window shown"); }
             InvalidateRect(w, NULL, FALSE);
         } else {
+            if (shown) { shown = 0; logf_("language window hidden"); }
             ShowWindow(w, SW_HIDE);
         }
         return 0;
@@ -1432,7 +1435,7 @@ static LRESULT CALLBACK lang_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         SetTextColor(dc, RGB(30, 235, 20));
         char s[32];
         snprintf(s, sizeof s, "Язык: %s", g_lang_ru ? "RU" : "EN");
-        text_w(dc, 0, 8, s, rc.right);
+        text_w(dc, 0, 10, s, rc.right);
         SelectObject(dc, of);
         DeleteObject(f);
         EndPaint(w, &ps);
@@ -1448,8 +1451,8 @@ static DWORD WINAPI lang_thread(LPVOID p) {
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = L"rip3coop_language";
     RegisterClassW(&wc);
-    g_lang_wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                                 wc.lpszClassName, L"", WS_POPUP, 0, 0, 200, 38,
+    g_lang_wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                                 wc.lpszClassName, L"", WS_POPUP, 0, 0, 240, 44,
                                  NULL, NULL, wc.hInstance, NULL);
     SetTimer(g_lang_wnd, 1, 250, NULL);
     MSG m;
